@@ -268,6 +268,11 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
       </div>
 
       <div class="group">
+        <div class="group-head"><span class="label">Quais filmes entram</span></div>
+        <div class="chips" id="poolChips"></div>
+      </div>
+
+      <div class="group">
         <div class="group-head">
           <span class="label">Minhas plataformas</span>
           <button class="textbtn" id="clearPlats" type="button">Limpar</button>
@@ -330,9 +335,9 @@ const SUBSCRIPTIONS = [
   { id: 350, name: "Apple TV+", also: [2243] },
   { id: 307, name: "Globoplay" },
   { id: 531, name: "Paramount+", also: [582, 2303] },
-  { id: 11, name: "MUBI" },
-  { id: 283, name: "Crunchyroll" },
-  { id: 47, name: "Looke" },
+  { id: 11, name: "MUBI", also: [201] },
+  { id: 283, name: "Crunchyroll", also: [1968] },
+  { id: 47, name: "Looke", also: [683] },
   { id: 167, name: "Claro video" }
 ];
 const MAIN_OF = {};
@@ -366,6 +371,7 @@ const state = {
   yFrom: saved.yFrom || "",
   yTo: saved.yTo || "",
   minRating: saved.minRating || 0,
+  minVotes: saved.minVotes ?? 50,
   plats: new Set(saved.plats || []),
   streamOnly: saved.streamOnly !== false,
   skipSeen: saved.skipSeen !== false,
@@ -383,7 +389,7 @@ const fmt = n => n.toLocaleString("pt-BR");
 
 function saveFilters() {
   store.set("filters", { genres: [...state.genres], match: state.match, yFrom: state.yFrom, yTo: state.yTo,
-    minRating: state.minRating, plats: [...state.plats], streamOnly: state.streamOnly, skipSeen: state.skipSeen });
+    minRating: state.minRating, minVotes: state.minVotes, plats: [...state.plats], streamOnly: state.streamOnly, skipSeen: state.skipSeen });
 }
 
 /* ---------- API ---------- */
@@ -405,7 +411,7 @@ async function api(path, params = {}) {
 function discoverParams(random) {
   const p = {
     language: "pt-BR", region: REGION, include_adult: "false", include_video: "false",
-    sort_by: "popularity.desc", "vote_count.gte": 150
+    sort_by: "popularity.desc", "vote_count.gte": state.minVotes
   };
   if (!random) {
     if (state.genres.size) p.with_genres = [...state.genres].join(state.match === "all" ? "," : "|");
@@ -413,9 +419,8 @@ function discoverParams(random) {
     if (from && to && from > to) [from, to] = [to, from];
     if (from) p["primary_release_date.gte"] = `${from}-01-01`;
     if (to) p["primary_release_date.lte"] = `${to}-12-31`;
-    if (state.minRating) { p["vote_average.gte"] = state.minRating; p["vote_count.gte"] = 300; }
-  } else {
-    p["vote_count.gte"] = 300;
+    // com nota mínima, exige ao menos 100 votos para um filme com 3 votos e nota 10 não passar
+    if (state.minRating) { p["vote_average.gte"] = state.minRating; p["vote_count.gte"] = Math.max(state.minVotes, 100); }
   }
   let providers = [...state.plats];
   if (!providers.length && state.streamOnly) providers = state.providerList.map(x => x.provider_id);
@@ -428,12 +433,18 @@ function discoverParams(random) {
   return p;
 }
 
+// O TMDB só entrega os primeiros 10.000 resultados (500 páginas) de cada busca.
+// Quando há mais que isso, cada sorteio usa uma ordem diferente para alcançar o catálogo todo.
+const SORTS = ["popularity.desc", "popularity.asc", "vote_count.desc", "vote_count.asc",
+  "primary_release_date.desc", "primary_release_date.asc", "vote_average.desc", "vote_average.asc",
+  "title.asc", "title.desc", "revenue.desc"];
+
 async function pageInfo(params) {
   const k = JSON.stringify(params);
   if (pagesCache.has(k)) return pagesCache.get(k);
   const data = await api("/discover/movie", { ...params, page: 1 });
   // o TMDB só entrega até a página 500
-  const info = { total: data.total_results, pages: Math.min(data.total_pages, 500), first: data.results };
+  const info = { total: data.total_results, pages: Math.min(data.total_pages, 500), capped: data.total_pages > 500, first: data.results };
   pagesCache.set(k, info);
   return info;
 }
@@ -453,6 +464,9 @@ function renderChips() {
     decades.map(d => `<button type="button" class="chip" data-d="${d}" aria-pressed="${String(state.yFrom) === String(d) && String(state.yTo) === String(d + 9)}">${d}s</button>`).join("");
 
   renderStars();
+
+  $("#poolChips").innerHTML = [[300, "Só os conhecidos"], [50, "Equilibrado"], [5, "Todos, até os desconhecidos"]].map(([v, txt]) =>
+    `<button type="button" class="chip" data-v="${v}" aria-pressed="${state.minVotes === v}">${txt}</button>`).join("");
 
   $("#matchAny").setAttribute("aria-pressed", state.match === "any");
   $("#matchAll").setAttribute("aria-pressed", state.match === "all");
@@ -502,7 +516,7 @@ function scheduleCount() {
       el.classList.toggle("zero", info.total === 0);
       el.innerHTML = info.total === 0
         ? `<b>Nenhum filme</b> combina com esses filtros. Tire um gênero ou amplie o período.`
-        : `<b>${fmt(info.total)}</b> ${info.total === 1 ? "filme combina" : "filmes combinam"} com seus filtros`;
+        : `<b>${info.total >= 20000 ? "Mais de 20.000" : fmt(info.total)}</b> ${info.total === 1 ? "filme combina" : "filmes combinam"} com seus filtros`;
       ["#drawBtn", "#drawBtnM"].forEach(s => $(s).disabled = info.total === 0);
     } catch (e) { if (seq === countSeq) $("#count").textContent = e instanceof KeyError ? "Chave da API inválida." : "Não foi possível contar agora."; }
   }, 350);
@@ -511,7 +525,8 @@ function scheduleCount() {
 function update() { saveFilters(); renderChips(); scheduleCount(); }
 
 document.addEventListener("click", e => {
-  const g = e.target.closest("[data-g]"), p = e.target.closest("[data-p]"), d = e.target.closest("[data-d]");
+  const g = e.target.closest("[data-g]"), p = e.target.closest("[data-p]"), d = e.target.closest("[data-d]"), v = e.target.closest("[data-v]");
+  if (v) { state.minVotes = +v.dataset.v; update(); }
   if (g) { const v = +g.dataset.g; state.genres.has(v) ? state.genres.delete(v) : state.genres.add(v); update(); }
   if (p) { const v = +p.dataset.p; state.plats.has(v) ? state.plats.delete(v) : state.plats.add(v); update(); }
   if (d) { const v = d.dataset.d; state.yFrom = v; state.yTo = v ? String(+v + 9) : ""; update(); }
@@ -654,8 +669,12 @@ async function draw(random) {
   busy = true;
   const label = random ? "Totalmente aleatório" : "Sorteado para você";
   try {
-    const params = discoverParams(random);
-    const info = await pageInfo(params);
+    let params = discoverParams(random);
+    let info = await pageInfo(params);
+    if (info.capped) {
+      params = { ...params, sort_by: SORTS[Math.floor(Math.random() * SORTS.length)] };
+      info = await pageInfo(params);
+    }
     if (!info.total) {
       renderNotice("Nada para sortear", "<p>Nenhum filme combina com esses filtros. Remova um gênero, amplie o período ou use o sorteio totalmente aleatório.</p>");
       return;
